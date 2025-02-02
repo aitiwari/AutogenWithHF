@@ -3,6 +3,7 @@ from configfile import Config
 from src.hf_autogen.hfautogen import hf_llmconfig
 from src.streamlitui.loadui import LoadStreamlitUI
 from src.usecases.textgen import TexGeneration
+from src.usecases.imggen import ImageGeneration
 
 
 
@@ -37,16 +38,26 @@ if __name__ == "__main__":
                 st.write(problem)
             
             
-            obj_txtgen = TexGeneration(assistant_name="Assistant", user_proxy_name='Userproxy',
+            obj_txt_gen = TexGeneration(assistant_name="Assistant", user_proxy_name='Userproxy',
                                                     llm_config=llm_config,
                                                     problem=problem)
-            obj_txtgen.run()
+            obj_txt_gen.run()
     
     elif user_input['selected_usecase'] == "Image Generation": 
         st.subheader("Image generation")
+        
         if problem:
             with st.chat_message("user"):
                 st.write(problem)
+                
+           
+            obj_img_gen = ImageGeneration(assistant_name="Image_Assistant", user_proxy_name='Userproxy',
+                                                    llm_config=llm_config,
+                                                    problem=problem)
+            obj_img_gen.run()
+            
+            # with st.chat_message('ai'):
+            #     st.image(image.open('./imagegen/response.jpeg'))
                
             
             

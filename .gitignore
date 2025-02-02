@@ -1,3 +1,4 @@
 
 *.pyc
 /autogen_cache/42
+*.jpeg

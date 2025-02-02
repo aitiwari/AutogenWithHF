@@ -7,14 +7,16 @@ import os
 import shutil
 import random
 import streamlit as st
+import base64
+from io import BytesIO
 
-from src.agents.assistantagent import TrackableAssistantAgent
+from src.agents.assistantagent import TrackableImageAssistantAgent
 from src.agents.userproxyagent import TrackableUserProxyAgent
 
 class APIModelClient:
     def __init__(self, config, **kwargs):
         self.device = config.get("device", "cpu")
-        self.api_url = "https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1"
+        self.api_url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-3.5-large"
         #self.api_url = "https://api-inference.huggingface.co/models/google/gemma-7b-it"  # Add the API URL to the config
         self.headers = {"Authorization": "Bearer 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"}  # Example: Add any required headers
 
@@ -49,8 +51,8 @@ class APIModelClient:
 
         input_data = {
             "inputs": conversation_history,
-            "parameters": {"return_full_text": False, "do_sample": False},
-            "options": {"wait_for_model": True, "use_cache": False}
+            # "parameters": {"return_full_text": False, "do_sample": False},
+            # "options": {"wait_for_model": True, "use_cache": False}
             # Include any other parameters required by your API
         }
 
@@ -58,32 +60,24 @@ class APIModelClient:
         response = requests.post(self.api_url, json=input_data, headers=self.headers)
 
         if response.status_code == 200:
-            api_response = response.json()
-            # Assuming your API returns a similar structure to what was previously expected
-            if ("\n    ```" in api_response[0]["generated_text"]):
-                api_response[0]["generated_text"] = api_response[0]["generated_text"].replace("\n    ", "\n")
-            model_response = SimpleNamespace()
-            model_response.choices = []
-
-            choice = SimpleNamespace()
-            #choice.message = SimpleNamespace(content=api_response[0]["generated_text"].split("```")[1])
-            choice.message = SimpleNamespace(content=api_response[0]["generated_text"])
-            model_response.choices.append(choice)
-
-            model_response.model = self.model_name
-
-            self.chat_index += 1
-
-
-            return model_response
+            return response
         else:
             raise Exception(f"API request failed with status code {response.status_code}: {response.text}")
 
 
     def message_retrieval(self, response):
         """Retrieve the messages from the response."""
-        choices = response.choices
-        return [choice.message.content for choice in choices]
+        import io
+        from PIL import Image
+        image = Image.open(io.BytesIO(response.content))
+        image_path = './imagegen/response.jpeg'
+        image.save(image_path)
+        # Open the image using PIL
+        image = Image.open(image_path)
+
+        # Display the image in Streamlit
+        st.image(image, caption="Loaded Image", use_column_width=True)
+        return [str(response.content)]
 
     def cost(self, response) -> float:
         """Calculate the cost of the response."""
@@ -98,7 +92,7 @@ class APIModelClient:
 
 
 class APIModelClientWithArguments(APIModelClient):
-    def __init__(self, config, hf_key, hf_url="https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1", **kwargs):
+    def __init__(self, config, hf_key, hf_url="https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-3.5-large", **kwargs):
         self.device = config.get("device", "cpu")
         self.api_url = hf_url
         # self.api_url = "https://api-inference.huggingface.co/models/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"  # Add the API URL to the config
@@ -121,7 +115,7 @@ def hf_llmconfig(selected_model):
     }
     st.session_state['llm_config'] = llm_config
     return llm_config
-def UserAgent(name, hf_key, max_consecutive_auto_reply=2, code_dir="coding", use_docker=False, system_message="You are a helpful AI assistant"):
+def UserAgent(name, llm_config, max_consecutive_auto_reply=1, code_dir="coding", use_docker=False, system_message="You are a helpful AI assistant"):
     llm_config = {
         "config_list": [{
             "model": "mistralai/Mixtral-8x7B-Instruct-v0.1",
@@ -130,7 +124,7 @@ def UserAgent(name, hf_key, max_consecutive_auto_reply=2, code_dir="coding", use
         }]
     }
     user_agent = TrackableUserProxyAgent(
-        name="user_proxy",
+        name=name,
         max_consecutive_auto_reply=max_consecutive_auto_reply,
         llm_config=llm_config,
         is_termination_msg=lambda x: x.get("content", "").rstrip().endswith("TERMINATE"),
@@ -142,44 +136,36 @@ def UserAgent(name, hf_key, max_consecutive_auto_reply=2, code_dir="coding", use
         human_input_mode="NEVER"
     )
 
-    user_agent.register_model_client(model_client_cls=APIModelClientWithArguments, hf_key=hf_key)
+    user_agent.register_model_client(model_client_cls=APIModelClientWithArguments, hf_key=st.session_state["api_key"])
 
     return user_agent
 
-def ModelAgent(name, hf_key, hf_url="https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1", system_message="", code_execution=False):
-    default_system_message = """You are a helpful AI assistant.
-    Solve tasks using your coding and language skills.
-    In the following cases, suggest python code (in a python coding block) or shell script (in a sh coding block) for the user to execute. Make sure to prefix the code block with 'python' or 'sh' depending.
-        1. When you need to collect info, use the code to output the info you need, for example, browse or search the web, download/read a file, print the content of a webpage or a file, get the current date/time, check the operating system. After sufficient info is printed and the task is ready to be solved based on your language skill, you can solve the task by yourself.
-        2. When you need to perform some task with code, use the code to perform the task and output the result. Finish the task smartly.
-    Solve the task step by step if you need to. If a plan is not provided, explain your plan first. Be clear which step uses code, and which step uses your language skill.
-    When using code, you must indicate the script type in the code block. The user cannot provide any other feedback or perform any other action beyond executing the code you suggest. The user can't modify your code. So do not suggest incomplete code which requires users to modify. Don't use a code block if it's not intended to be executed by the user.
-    If you want the user to save the code in a file before executing it, put # filename: <filename> inside the code block as the first line. Don't include multiple code blocks in one response. Do not ask users to copy and paste the result. Instead, use 'print' function for the output when relevant. Check the execution result returned by the user.
-    If the result indicates there is an error, fix the error and output the code again. Suggest the full code instead of partial code or code changes. If the error can't be fixed or if the task is not solved even after the code is executed successfully, analyze the problem, revisit your assumption, collect additional info you need, and think of a different approach to try..
-    When you find an answer, verify the answer carefully. Include verifiable evidence in your response if possible.
+def ModelAgent(name, llm_config, hf_url="https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-3.5-large", system_message="", code_execution=False):
+    default_system_message = """You are a helpful AI assistant for generating and manipulating images.
     """
 
     if system_message == "":
         system_message = default_system_message
 
-    llm_config = {
-        "config_list": [{
-            "model": "",
-            "model_client_cls": "APIModelClientWithArguments",
-            "device": ""
-        }]
-    }
+    # llm_config = {
+    #     "config_list": [{
+    #         "model": "",
+    #         "model_client_cls": "APIModelClientWithArguments",
+    #         "device": ""
+    #     }]
+    # }
+    llm_config =llm_config
 
 
 
-    agent = TrackableAssistantAgent(
+    agent = TrackableImageAssistantAgent(
         name=name,
         llm_config=llm_config,
         system_message=system_message,
         code_execution_config=code_execution,
         
     )
-    agent.register_model_client(model_client_cls=APIModelClientWithArguments, hf_key=hf_key, hf_url=hf_url)
+    agent.register_model_client(model_client_cls=APIModelClientWithArguments, hf_key=st.session_state["api_key"], hf_url=hf_url)
 
     return agent
 
@@ -206,7 +192,7 @@ async def InitChat(user, agent, _input, summary_method="reflection_with_llm"):
 
     await user.a_initiate_chat(
         agent,
-        max_turns=2,
+        max_turns=1,
         message=_input,
         summary_method=summary_method,
         cache=custom_cache,
@@ -215,7 +201,7 @@ async def InitChat(user, agent, _input, summary_method="reflection_with_llm"):
 
     #clear_directory_contents(f'./autogen_cache/{seed}')    
 
-def GroupChat(user, agents, _input, hf_key, hf_url="https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1", max_round=5):
+def GroupChat(user, agents, _input, hf_key, hf_url="https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-3.5-large", max_round=5):
     llm_config = {
             "config_list": [{
                 "model": "",
